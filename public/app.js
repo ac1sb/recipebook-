@@ -158,9 +158,12 @@ async function search(q) {
   state.lastQuery = q;
   state.results.clear();
   $('#results').innerHTML = '';
-  $('#webResults').innerHTML = '';
-  setStatus($('#webStatus'), '');
-  const apiSources = [...state.sources].filter((s) => s !== 'web');
+  for (const id of ['web', 'blog']) {
+    $(`#${id}Results`).innerHTML = '';
+    setStatus($(`#${id}Status`), '');
+  }
+  const slow = new Set(state.status.sources.filter((s) => s.slow).map((s) => s.id));
+  const apiSources = [...state.sources].filter((s) => !slow.has(s));
   const tasks = [];
 
   if (apiSources.length) {
@@ -174,10 +177,11 @@ async function search(q) {
           const timeNote = filteredOut ? ` ${filteredOut} hidden by your time filters.` : '';
           const fitNote = personalized?.length ? ' Ranked using your feedback.' : '';
           const skipped = unrelated ? ` Skipped ${unrelated} unrelated result${unrelated > 1 ? 's' : ''}.` : '';
-          const moreNote = exact < 6 && !state.status.sources.some((s) => s.id !== 'themealdb' && s.enabled)
-            ? ' <br><span class="muted">TheMealDB is small — unlock Spoonacular, Edamam or the whole web (see README) for many more recipes.</span>' : '';
+          const moreNote = exact < 6 && ![...state.sources].some((s) => s !== 'themealdb')
+            ? ' <br><span class="muted">TheMealDB is small — tick “Food blogs” for many more recipes.</span>' : '';
+          const label = state.sources.size > 1 ? '<b>From recipe databases:</b> ' : '';
           const msg = results.length
-            ? `${exact} recipe${exact === 1 ? '' : 's'} matching “${esc(q)}”${close ? ` and ${close} close match${close > 1 ? 'es' : ''}` : ''}, best for “${esc(levelLabel())}” first.${fitNote}${timeNote}${skipped}${moreNote}`
+            ? `${label}${exact} recipe${exact === 1 ? '' : 's'} matching “${esc(q)}”${close ? ` and ${close} close match${close > 1 ? 'es' : ''}` : ''}, best for “${esc(levelLabel())}” first.${fitNote}${timeNote}${skipped}${moreNote}`
             : `No recipes found for “${esc(q)}”${filteredOut ? ` within your time limits (${filteredOut} recipes were too long — try loosening the prep or cook time)` : ''}.${moreNote}`;
           setStatus($('#searchStatus'), msg + (errors.length ? ` <span class="muted">(${esc(errors.join('; '))})</span>` : ''));
         })
@@ -185,6 +189,22 @@ async function search(q) {
     );
   } else {
     setStatus($('#searchStatus'), '');
+  }
+
+  if (state.sources.has('blogs')) {
+    setStatus($('#blogStatus'), `${spinner} Searching food blogs — Budget Bytes, RecipeTin Eats, Natasha’s Kitchen, Once Upon a Chef and more… (a few seconds)`);
+    tasks.push(
+      api(`/api/search/blogs?${searchParams(q)}`)
+        .then(({ results, filteredOut, sites }) => {
+          const exact = results.filter((r) => r.relevance?.full !== false).length;
+          const timeNote = filteredOut ? ` ${filteredOut} hidden by your time filters.` : '';
+          setStatus($('#blogStatus'), results.length
+            ? `<b>From food blogs:</b> ${exact} recipe${exact === 1 ? '' : 's'} matching “${esc(q)}” from ${sites} site${sites === 1 ? '' : 's'}.${timeNote}`
+            : `No food blog recipes found for “${esc(q)}”.${timeNote}`);
+          renderResults($('#blogResults'), results);
+        })
+        .catch((err) => setStatus($('#blogStatus'), `Food blogs: ${esc(err.message)}`, 'error')),
+    );
   }
 
   if (state.sources.has('web')) {
@@ -206,8 +226,12 @@ function levelLabel() {
   return state.status.levels.find((l) => l.id === state.pref)?.label;
 }
 
+const urlKey = (u) => String(u || '').replace(/^https?:\/\/(www\.)?/, '').replace(/[?#].*$/, '').replace(/\/$/, '');
+
 function renderResults(grid, results) {
   let closeHeading = false;
+  const shown = new Set([...state.results.values()].map((r) => urlKey(r.url)).filter(Boolean));
+  results = results.filter((r) => !r.url || !shown.has(urlKey(r.url)));
   for (const r of results) {
     if (r.relevance && !r.relevance.full && !closeHeading) {
       closeHeading = true;
@@ -221,7 +245,7 @@ function renderResults(grid, results) {
       title: r.title,
       image: r.image,
       source: r.sourceName,
-      meta: [timeSummary(r), `${r.ingredients.length} ingredients`, r.description && r.description.slice(0, 40)],
+      meta: [timeSummary(r), `${r.ingredients.length} ingredients`, r.description && r.description.length <= 40 ? r.description : (r.tags || []).slice(0, 2).join(' · ')],
       homemade: r.homemade,
       fit: r.relevance && !r.relevance.full
         ? { ...r.fit, warnings: [`no ${r.relevance.missing.join(' or ')}`, ...(r.fit?.warnings || [])], reasons: r.fit?.reasons || [] }

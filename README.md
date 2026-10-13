@@ -4,7 +4,11 @@ A personal recipe library. Search for a kind of dish and get recipes, with photo
 
 ## Features
 
-- **Search many sources at once.** Includes [TheMealDB](https://www.themealdb.com) with no setup. Spoonacular and Edamam work with free API keys (together they cover thousands of food blogs and publishers). **Whole web** uses Claude to search recipe sites across the internet and reads each page's recipe data.
+- **Search many sources at once.** Two free sources work with no setup:
+  - **Food blogs:** about 30 popular blogs (Budget Bytes, RecipeTin Eats, Natasha's Kitchen, Once Upon a Chef, Sally's Baking, Skinnytaste…), searched live and read for photos, ingredients and steps.
+  - [TheMealDB](https://www.themealdb.com).
+
+  Optionally, Spoonacular and Edamam work with free API keys (together they cover thousands of food blogs and publishers). **Whole web** uses Claude to search recipe sites across the internet and reads each page's recipe data.
 - **Results that match your whole search.** "chicken noodle soup" has to have chicken, noodles *and* be a soup. The site checks the title, ingredients, tags and method, and understands synonyms (prawn = shrimp, lasagne = lasagna, rosół = soup). "Chicken stock" doesn't count as chicken. Exact matches come first; recipes missing one part appear under **Close matches** with a note like "no noodle"; unrelated results are dropped.
 - **Photos** for every recipe that has one.
 - **How processed?** Pick one of four levels: Convenience OK, Lightly processed, Mostly whole foods, or From scratch. Every recipe gets a "% from scratch" score. Two kinds of items are highlighted, each with a from-scratch alternative:
@@ -45,6 +49,7 @@ Your library is saved in `data/library.json`. Set `RECIPEBOOK_DATA` to store it 
 
 ## Notes
 
+- To add or remove blogs, edit the `SITES` list in `lib/sources/blogs.js`. Any WordPress food blog that publishes recipe data works.
 - A few large recipe publishers block automated requests, so a link from one of those sites may fail to import. Most sites and food blogs work.
 - `npm test` runs the unit tests.
 
@@ -58,7 +63,7 @@ lib/profile.js          Taste profile learned from feedback, and how well recipe
 lib/relevance.js        How well a recipe matches the words searched for (with synonyms)
 lib/tweaks.js           Rule-based alterations from feedback
 lib/claude.js           Whole-web search and feedback-driven alterations via Claude
-lib/sources/*.js        TheMealDB, Spoonacular, Edamam, and any-web-page (schema.org) readers
+lib/sources/*.js        Food blogs, TheMealDB, Spoonacular, Edamam, and any-web-page (schema.org) readers
 lib/store.js            JSON-file library storage
 public/                 The web app (HTML/CSS/JS, no build step)
 ```

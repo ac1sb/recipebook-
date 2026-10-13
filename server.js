@@ -5,6 +5,7 @@ import * as themealdb from './lib/sources/themealdb.js';
 import * as spoonacular from './lib/sources/spoonacular.js';
 import * as edamam from './lib/sources/edamam.js';
 import * as webpage from './lib/sources/webpage.js';
+import * as blogs from './lib/sources/blogs.js';
 import { analyzeRecipe, adaptIngredients, preferenceDistance, matchesPreference, LEVELS } from './lib/homemade.js';
 import { claudeEnabled, searchWeb, suggestAlterations, describeFeedback } from './lib/claude.js';
 import { ruleBasedAlterations, FEEDBACK_TAGS } from './lib/tweaks.js';
@@ -113,7 +114,8 @@ app.get('/api/status', wrap(async (_req, res) => {
   res.json({
     sources: [
       ...Object.values(SOURCES).map((s) => ({ id: s.info.id, name: s.info.name, needsKey: s.info.needsKey, enabled: s.info.enabled() })),
-      { id: 'web', name: 'Whole web (via Claude)', needsKey: true, enabled: claudeEnabled() },
+      { id: 'blogs', name: blogs.info.name, needsKey: false, enabled: true, slow: true },
+      { id: 'web', name: 'Whole web (via Claude)', needsKey: true, enabled: claudeEnabled(), slow: true },
     ],
     claude: claudeEnabled(),
     levels: LEVELS,
@@ -155,6 +157,19 @@ app.get('/api/search', wrap(async (req, res) => {
     filteredOut: kept.length - ranked.length,
     personalized: profile?.feedbackCount ? profile.summary : null,
   });
+}));
+
+// Food blogs take a few seconds (they're searched and read live), so the page asks for them separately.
+app.get('/api/search/blogs', wrap(async (req, res) => {
+  const q = String(req.query.q || '').trim();
+  if (!q) return res.status(400).json({ error: 'Enter something to search for.' });
+  const pref = validPref(req.query.pref);
+  const times = timeFilters(req.query);
+  const profile = req.query.personalize === '0' ? null : await globalProfile();
+  const found = dedupe(await blogs.search(q, { limit: 18 }));
+  const { kept, dropped } = filterRelevant(found, q, { minFull: 6 });
+  const ranked = rank(kept, pref, { profile, times });
+  res.json({ results: ranked, unrelated: dropped, filteredOut: kept.length - ranked.length, sites: new Set(ranked.map((r) => r.sourceName)).size });
 }));
 
 app.get('/api/search/web', wrap(async (req, res) => {
@@ -332,9 +347,12 @@ app.post('/api/library/:id/similar', wrap(async (req, res) => {
   const times = timeFilters(b);
   if (profile.prefs?.quick > 0.3 && reference.totalTime && !times.maxTotal) times.maxTotal = reference.totalTime;
   const query = dishQuery(entry.recipe.title);
-  const { merged, errors } = await searchSources(query, Object.keys(SOURCES), { limit: 24, times });
+  const [{ merged, errors }, fromBlogs] = await Promise.all([
+    searchSources(query, Object.keys(SOURCES), { limit: 24, times }),
+    blogs.search(query, { limit: 16 }).catch(() => []),
+  ]);
 
-  let candidates = merged;
+  let candidates = [...fromBlogs, ...merged];
   if (b.includeWeb && claudeEnabled()) {
     const wishes = [describeFeedback(entry.feedback), profileWishes(profile)].filter(Boolean).join('\n');
     const web = await searchWeb(query, { pref, limit: 10, times, wishes: `They have cooked "${entry.recipe.title}" and said:\n${wishes}\nLook for versions of this dish that address that feedback.` })
