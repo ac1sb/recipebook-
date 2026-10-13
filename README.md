@@ -39,7 +39,7 @@ cp .env.example .env   # optional: add API keys
 npm start
 ```
 
-Then open http://localhost:3000.
+Then open http://localhost:3000. (To put it on the internet, see **Publish on Cloudflare** below.)
 
 ### API keys (all optional)
 
@@ -55,6 +55,62 @@ Your library is saved in `data/library.json`, and photos of saved recipes in `da
 
 **Saved recipes are a full local copy.** When you save a recipe, the site stores the ingredients, method, times and a copy of the photo on your computer, so it stays in your library even if the original site removes it or changes it. If a source only gave the ingredients, the method is fetched from the original page at save time. Recipes saved before this feature get their photos copied the next time you start the site. To back up your library, copy the `data` folder.
 
+## Publish on Cloudflare
+
+The same app runs on Cloudflare Workers:
+- recipes and feedback are stored in a **D1** database
+- saved photos go in an **R2** bucket
+- the pages are served as static assets
+
+**Plan:** use the **Workers Paid** plan ($5/month). Each search reads dozens of recipe pages at once, which goes beyond the Free plan's per-request limits (10 ms of CPU time and 50 outgoing requests). On the Free plan, saving and browsing your library works, but searches will fail. D1 and R2 usage for a personal recipe library stays within their included free amounts. R2 has to be turned on once in the dashboard (**R2 Object Storage → Get started**) before step 3.
+
+### One-time setup
+
+Run these in the project folder:
+
+```bash
+npm install
+npx wrangler login                                   # opens the browser to sign in to Cloudflare
+npx wrangler d1 create borsari-kitchen               # prints a database_id
+```
+
+Copy the printed `database_id` into `wrangler.toml`, replacing `REPLACE_WITH_YOUR_DATABASE_ID`. Then:
+
+```bash
+npx wrangler r2 bucket create borsari-kitchen-images
+npm run cf:setup                                     # creates the tables in D1
+npx wrangler secret put APP_PASSWORD                 # choose a password for the site (strongly recommended)
+npx wrangler secret put ANTHROPIC_API_KEY            # optional, same for SPOONACULAR_API_KEY, EDAMAM_APP_ID, EDAMAM_APP_KEY
+npm run deploy
+```
+
+`npm run deploy` prints the site's address, e.g. `https://borsari-kitchen.<your-subdomain>.workers.dev`. With `APP_PASSWORD` set, the browser asks for a username and password: type anything as the username, and your password.
+
+**Your own domain (optional):** in the Cloudflare dashboard go to **Workers & Pages → borsari-kitchen → Settings → Domains & Routes → Add → Custom domain**, and enter something like `kitchen.yourdomain.com`. The domain must already be on your Cloudflare account.
+
+**Instead of a password**, you can use **Cloudflare Access** (Zero Trust → Access → Applications) to require a one-time email code. If you do, you can skip `APP_PASSWORD`.
+
+### Copy your existing library up
+
+The library on your computer and the one on Cloudflare are separate. To copy what you've saved locally (recipes, versions, feedback, photos and settings) to Cloudflare:
+
+```bash
+npm run push-library
+```
+
+You can run it again later: recipes with the same id are replaced, and anything you've added on Cloudflare is kept.
+
+### Updating the site later
+
+```bash
+git pull
+npm install
+npm run cf:setup     # only does something when there are new database changes
+npm run deploy
+```
+
+To test the Cloudflare version on your computer first, run `npm run cf:dev` and open http://localhost:8787. It uses a local copy of D1 and R2. Put any keys in a `.dev.vars` file, written the same way as `.env`.
+
 ## Notes
 
 - To add or remove blogs, edit the `SITES` list in `lib/sources/blogs.js`. Any WordPress food blog that publishes recipe data works.
@@ -64,16 +120,21 @@ Your library is saved in `data/library.json`, and photos of saved recipes in `da
 ## Project layout
 
 ```
-server.js               Express server and API
+server.js               Runs the app on your computer (npm start): JSON file + images folder
+worker.js               Runs the app on Cloudflare Workers: D1 + R2 + static assets
+wrangler.toml           Cloudflare settings
+migrations/             D1 database tables
+scripts/                push-library-to-cloudflare.mjs
+lib/app.js              The web API (Hono), shared by both
+lib/storage/            Library and photo storage for each place it runs
 lib/homemade.js         Processed / from-scratch scoring and swaps
 lib/time.js             Prep and cook times (from the source, or estimated) and time filters
 lib/profile.js          Taste profile learned from feedback, and how well recipes fit it
 lib/relevance.js        How well a recipe matches the words searched for (with synonyms)
 lib/tweaks.js           Rule-based alterations from feedback
 lib/substitutes.js      Common ingredient substitutions
-lib/claude.js           Whole-web search and feedback-driven alterations via Claude
+lib/claude.js           Whole-web search, alterations and substitutes via Claude
+lib/images.js           Copies of saved recipes' photos
 lib/sources/*.js        Food blogs, TheMealDB, Spoonacular, Edamam, and any-web-page (schema.org) readers
-lib/store.js            JSON-file library storage
-lib/images.js           Local copies of saved recipes' photos
 public/                 The web app (HTML/CSS/JS, no build step)
 ```
