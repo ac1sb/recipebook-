@@ -187,6 +187,13 @@ select { padding: 8px 10px; border-radius: 10px; border: 1px solid var(--line); 
 .ingredients li.processed { background: color-mix(in srgb, var(--warn-soft) 70%, var(--accent-soft)); }
 .ingredients li.homemade .flag b { color: var(--good); }
 .ingredients li.changed { background: var(--accent-soft); }
+.ingredients li.pick label { display: flex; gap: 8px; align-items: flex-start; cursor: pointer; }
+.ingredients li.pick input { margin-top: 5px; accent-color: var(--accent); }
+.sub-title { margin-bottom: 4px; }
+.sub-opt { display: flex; gap: 8px; align-items: flex-start; padding: 3px 0 3px 6px; cursor: pointer; font-size: .95rem; }
+.sub-opt input { margin-top: 5px; accent-color: var(--accent); flex: none; }
+.tools { display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 12px; }
+.notice .small { margin-left: 6px; }
 .steps { padding-left: 1.3em; margin: 0; display: grid; gap: 10px; }
 .steps li::marker { color: var(--accent); font-weight: 700; }
 

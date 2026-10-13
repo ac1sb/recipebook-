@@ -51,5 +51,5 @@ test('adapts ingredients toward the preference', () => {
 
   const shortcut = adaptIngredients(['1 lb dried black beans', '1 onion'], 'shortcut');
   assert.equal(shortcut.changes.length, 1);
-  assert.match(shortcut.ingredients[0], /shortcut/);
+  assert.match(shortcut.ingredients[0], /store-bought/);
 });

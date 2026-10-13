@@ -341,22 +341,6 @@ function heroHtml(image, title) {
     : '';
 }
 
-function ingredientsHtml(items, { changed = new Set() } = {}) {
-  const showShortcuts = state.pref === 'shortcut';
-  return `<ul class="ingredients">${items
-    .map((i) => {
-      const f = i.flag;
-      let cls = f ? `${f.type} ${f.kind || ''}` : '';
-      if (f?.type === 'homemade' && showShortcuts) cls += ' show-short';
-      if (changed.has(i.text)) cls += ' changed';
-      let note = '';
-      if (f?.type === 'convenience') note = `<span class="flag"><b>${f.kind === 'processed' ? '🏭' : '🥫'} ${esc(f.label)}</b> — from scratch: ${esc(f.tip)}</span>`;
-      else if (f?.type === 'homemade' && showShortcuts) note = `<span class="flag"><b>⚡ Shortcut</b> — ${esc(f.tip)}</span>`;
-      return `<li class="${cls}">${esc(i.text)}${note}</li>`;
-    })
-    .join('')}</ul>`;
-}
-
 function stepsHtml(steps, url) {
   if (!steps.length) {
     return `<p class="muted">This source doesn't share the method.${url ? ` <a href="${esc(url)}" target="_blank" rel="noopener">See the full instructions on the original site ↗</a>` : ''}</p>`;
@@ -392,8 +376,7 @@ async function openRecipe(r, { backTo = null } = {}) {
     } catch { /* keep what we have */ }
   }
 
-  function render(recipe, adapted) {
-    const items = adapted ? adapted.items : recipe.homemade.items;
+  function render(recipe) {
     openDrawer(`
       ${backTo ? `<button class="back small" id="backBtn">← Back to ${esc(backTo.title)}</button>` : ''}
       ${heroHtml(recipe.image, recipe.title)}
@@ -411,46 +394,198 @@ async function openRecipe(r, { backTo = null } = {}) {
         </div>
         <div class="row">
           ${inLibrary ? `<button class="primary" id="openLib">📖 Open in my library</button>` : `<button class="primary" id="saveBtn">＋ Save to my library</button>`}
-          <button id="adaptBtn">${adapted ? '↺ Show original' : `${LEVEL_ICONS[state.pref]} Adapt to “${esc(levelLabel())}”`}</button>
         </div>
-        ${adapted ? adaptNotice(adapted) : ''}
         <div class="panel">${scoreHtml(recipe.homemade)}</div>
         <div class="cols">
-          <div class="panel"><h3>Ingredients</h3>${ingredientsHtml(items, { changed: adapted?.changedSet })}</div>
+          <div class="panel" id="ingPanel"></div>
           <div class="panel"><h3>Method</h3>${stepsHtml(recipe.steps, recipe.url)}</div>
         </div>
       </div>`);
 
-    $('#saveBtn')?.addEventListener('click', async (e) => {
-      e.target.disabled = true;
-      const recipeToSave = { ...recipe, homemade: undefined };
-      const entry = await api('/api/library', { method: 'POST', body: { recipe: recipeToSave } });
-      // If the cook saved an adapted version, keep that as their first variation too.
-      if (adapted?.changes.length) {
-        await api(`/api/library/${entry.id}/versions`, {
-          method: 'POST',
-          body: { title: `${levelLabel()} version`, summary: `Adapted to “${levelLabel()}”.`, changes: adapted.changes.map((c) => `${c.label}: ${c.to}`), ingredients: adapted.ingredients, steps: recipe.steps, origin: 'rules' },
-        });
+    const saveRecipe = async (version) => {
+      const entry = await api('/api/library', { method: 'POST', body: { recipe: { ...recipe, homemade: undefined, fit: undefined, relevance: undefined } } });
+      let versionId = null;
+      // If the cook changed the ingredients first, keep that as their first version too.
+      if (version) {
+        const updated = await api(`/api/library/${entry.id}/versions`, { method: 'POST', body: { ...version, steps: recipe.steps } });
+        versionId = updated.versions.at(-1)?.id || null;
       }
       await refreshLibrary();
-      toast('Saved to your library');
-      openLibraryEntry(entry.id);
+      toast(version ? 'Saved to your library with your changes' : 'Saved to your library');
+      await openLibraryEntry(entry.id);
+      if (versionId) {
+        state.versionId = versionId;
+        renderEntry();
+      }
+    };
+
+    mountIngredientTools($('#ingPanel'), {
+      title: recipe.title,
+      ingredients: recipe.ingredients,
+      items: recipe.homemade.items,
+      steps: recipe.steps,
+      saveLabel: inLibrary ? null : 'Save to my library with these changes',
+      onSave: inLibrary ? null : saveRecipe,
+    });
+
+    $('#saveBtn')?.addEventListener('click', async (e) => {
+      e.target.disabled = true;
+      await saveRecipe(null);
     });
     $('#openLib')?.addEventListener('click', () => openLibraryEntry(inLibrary.id));
     $('#backBtn')?.addEventListener('click', () => openLibraryEntry(backTo.id, { keepVersion: true, scrollTo: '#similarPanel' }));
-    $('#adaptBtn').addEventListener('click', async () => {
-      if (adapted) return render(recipe);
-      const result = await api('/api/adapt', { method: 'POST', body: { ingredients: recipe.ingredients, pref: state.pref } });
-      if (!result.changes.length) return toast(`Already fits “${levelLabel()}” — nothing to swap.`);
-      const changedSet = new Set(result.ingredients.filter((t, i) => t !== recipe.ingredients[i]));
-      render(recipe, { ...result, changedSet, items: result.ingredients.map((text) => ({ text, flag: null })) });
-    });
   }
 }
 
-function adaptNotice(adapted) {
-  const dir = adapted.changes[0]?.direction === 'shortcut' ? 'shortcuts' : 'homemade swaps';
-  return `<div class="notice"><b>${adapted.changes.length} ${dir} applied</b> (highlighted). Save to your library to keep this as a version you can cook and rate.</div>`;
+// ---------- Ingredient tools: adapt, use canned, substitute missing ----------
+
+// Renders an ingredient list with tools to rework it, inside `el`.
+// opts: { title, ingredients, items (flags from the server), steps, saveLabel, onSave(version) }
+function mountIngredientTools(el, opts) {
+  const original = [...opts.ingredients];
+  const local = {
+    lines: [...original],
+    changes: [], // human-readable list of what changed
+    kinds: new Set(), // 'scratch' | 'canned' | 'substitutes'
+    picking: false,
+    missing: new Set(), // indexes ticked as missing
+    subs: null, // [{ index, original, options, choice }]
+    subsOrigin: null,
+    busy: false,
+  };
+
+  const scratchTarget = state.pref === 'mostly' || state.pref === 'scratch' ? state.pref : 'scratch';
+  const scratchLabel = scratchTarget === state.pref ? `${LEVEL_ICONS[state.pref]} Adapt to “${esc(levelLabel())}”` : '👩‍🍳 Make it from scratch';
+
+  function changedCount() {
+    return local.lines.filter((l, i) => l !== original[i]).length;
+  }
+
+  function lineHtml(text, i) {
+    const changed = text !== original[i];
+    const f = changed ? null : opts.items?.[i]?.flag;
+    let cls = f ? `${f.type} ${f.kind || ''}` : '';
+    if (changed) cls += ' changed';
+    let note = '';
+    if (f?.type === 'convenience') note = `<span class="flag"><b>${f.kind === 'processed' ? '🏭' : '🥫'} ${esc(f.label)}</b> — from scratch: ${esc(f.tip)}</span>`;
+    else if (f?.type === 'homemade' && state.pref === 'shortcut') note = `<span class="flag"><b>⚡ Shortcut</b> — ${esc(f.tip)}</span>`;
+
+    if (local.picking) {
+      return `<li class="${cls} pick"><label><input type="checkbox" data-missing="${i}" ${local.missing.has(i) ? 'checked' : ''}> ${esc(text)}</label></li>`;
+    }
+    const sub = local.subs?.find((x) => x.index === i);
+    if (sub) {
+      const opt = (o, k) => `<label class="sub-opt"><input type="radio" name="sub-${i}" data-sub="${i}" value="${k}" ${sub.choice === k ? 'checked' : ''}>
+        <span>${esc(o.text)}${o.note ? ` <span class="muted">— ${esc(o.note)}</span>` : ''}</span></label>`;
+      return `<li class="${sub.choice >= 0 ? 'changed' : ''}"><div class="sub-title">Instead of <b>${esc(sub.original)}</b>:</div>
+        ${sub.options.map(opt).join('')}
+        <label class="sub-opt"><input type="radio" name="sub-${i}" data-sub="${i}" value="-1" ${sub.choice === -1 ? 'checked' : ''}> <span class="muted">Keep the original (I'll get it)</span></label></li>`;
+    }
+    return `<li class="${cls}">${esc(text)}${note}</li>`;
+  }
+
+  function render() {
+    const n = changedCount();
+    el.innerHTML = `
+      <h3>Ingredients</h3>
+      <div class="tools">
+        <button class="small" data-act="scratch" title="Swap canned, boxed and processed products for homemade">${scratchLabel}</button>
+        <button class="small" data-act="canned" title="Swap homemade parts for canned or store-bought versions">🥫 Use canned &amp; store-bought</button>
+        <button class="small" data-act="missing" title="Tick what you don't have and get substitutes">🔄 Missing something?</button>
+        ${n ? '<button class="small ghost" data-act="reset">↺ Undo changes</button>' : ''}
+      </div>
+      ${local.picking ? `<div class="notice">Tick the ingredients you <b>don't have</b>, then
+          <button class="small primary" data-act="find" ${local.missing.size ? '' : 'disabled'}>Find substitutes${local.missing.size ? ` (${local.missing.size})` : ''}</button>
+          <button class="small ghost" data-act="cancel">Cancel</button></div>` : ''}
+      ${local.busy ? `<div class="status">${spinner} ${state.status.claude ? 'Claude is finding substitutes…' : 'Finding substitutes…'}</div>` : ''}
+      ${local.subs && !local.picking ? `<div class="notice">Pick a substitute for each missing ingredient below${local.subsOrigin === 'claude' ? ' (suggested by Claude for this recipe)' : ''}.</div>` : ''}
+      <ul class="ingredients">${local.lines.map(lineHtml).join('')}</ul>
+      ${n ? `<div class="notice" style="margin-top:12px"><b>${n} ingredient${n > 1 ? 's' : ''} changed</b> (highlighted).
+          ${opts.onSave ? `<button class="small primary" data-act="save">${esc(opts.saveLabel)}</button>` : ''}</div>` : ''}`;
+  }
+
+  async function adapt(kind) {
+    const body = kind === 'canned' ? { ingredients: local.lines, direction: 'shortcut' } : { ingredients: local.lines, ...(scratchTarget === 'scratch' ? { direction: 'scratch' } : { pref: scratchTarget }) };
+    const result = await api('/api/adapt', { method: 'POST', body });
+    if (!result.changes.length) {
+      return toast(kind === 'canned'
+        ? 'Nothing here has a common canned or store-bought version.'
+        : 'Nothing canned, boxed or processed to swap — it\'s already homemade.');
+    }
+    local.lines = result.ingredients;
+    local.kinds.add(kind);
+    local.changes.push(...result.changes.map((c) => `${c.label}: ${c.to}`));
+    render();
+  }
+
+  async function findSubstitutes() {
+    const indexes = [...local.missing].sort((a, b) => a - b);
+    local.picking = false;
+    local.busy = true;
+    render();
+    try {
+      const res = await api('/api/substitute', {
+        method: 'POST',
+        body: { title: opts.title, ingredients: local.lines, steps: opts.steps, missing: indexes.map((i) => local.lines[i]) },
+      });
+      local.subsOrigin = res.origin;
+      // "Instead of" always names the recipe's own ingredient, even if it was swapped above.
+      local.subs = indexes.map((index, k) => ({ index, original: original[index], options: res.substitutions[k]?.options || [], choice: res.substitutions[k]?.options?.length ? 0 : -1 }));
+      for (const sub of local.subs) applySub(sub);
+      local.kinds.add('substitutes');
+    } catch (err) {
+      toast(err.message);
+    } finally {
+      local.busy = false;
+      local.missing.clear();
+      render();
+    }
+  }
+
+  function applySub(sub) {
+    const opt = sub.options[sub.choice];
+    local.lines[sub.index] = opt ? `${opt.text}  (instead of ${sub.original})` : sub.original;
+  }
+
+  el.addEventListener('click', async (e) => {
+    const act = e.target.closest('[data-act]')?.dataset.act;
+    if (!act || local.busy) return;
+    if (act === 'scratch' || act === 'canned') await adapt(act);
+    else if (act === 'missing') { local.picking = true; local.subs = null; render(); }
+    else if (act === 'cancel') { local.picking = false; local.missing.clear(); render(); }
+    else if (act === 'find') await findSubstitutes();
+    else if (act === 'reset') {
+      Object.assign(local, { lines: [...original], changes: [], picking: false, subs: null });
+      local.kinds.clear();
+      local.missing.clear();
+      render();
+    } else if (act === 'save') {
+      e.target.disabled = true;
+      const subChanges = (local.subs || []).filter((x) => x.choice >= 0).map((x) => `Instead of ${x.original}: ${x.options[x.choice].text}`);
+      const names = { scratch: 'From scratch', canned: 'Canned & store-bought', substitutes: 'With substitutes' };
+      const kinds = [...local.kinds].filter((k) => k !== 'substitutes' || subChanges.length);
+      await opts.onSave({
+        title: kinds.map((k) => names[k]).join(' + ') || 'My version',
+        summary: kinds.includes('substitutes') ? 'Uses substitutes for ingredients I didn’t have.' : `Reworked: ${kinds.map((k) => names[k].toLowerCase()).join(' and ')}.`,
+        changes: [...local.changes, ...subChanges],
+        ingredients: local.lines,
+        origin: 'rules',
+      });
+    }
+  });
+  el.addEventListener('change', (e) => {
+    if (e.target.dataset.missing != null) {
+      const i = Number(e.target.dataset.missing);
+      e.target.checked ? local.missing.add(i) : local.missing.delete(i);
+      render();
+    } else if (e.target.dataset.sub != null) {
+      const sub = local.subs.find((x) => x.index === Number(e.target.dataset.sub));
+      sub.choice = Number(e.target.value);
+      applySub(sub);
+      render();
+    }
+  });
+  render();
 }
 
 // ---------- Library ----------
@@ -567,7 +702,7 @@ function renderEntry(scrollTo) {
       <div class="panel">${scoreHtml(v.homemade || r.homemade)}</div>
 
       <div class="cols">
-        <div class="panel"><h3>Ingredients</h3>${ingredientsHtml((v.homemade || r.homemade).items)}</div>
+        <div class="panel" id="ingPanel"></div>
         <div class="panel"><h3>Method</h3>${stepsHtml(v.steps, r.url)}</div>
       </div>
 
@@ -612,6 +747,21 @@ function renderEntry(scrollTo) {
         <div id="similarResults" class="grid"></div>
       </div>
     </div>`);
+
+  mountIngredientTools($('#ingPanel'), {
+    title: r.title,
+    ingredients: v.ingredients,
+    items: (v.homemade || r.homemade).items,
+    steps: v.steps,
+    saveLabel: 'Save as a new version',
+    onSave: async (version) => {
+      state.entry = await api(`/api/library/${e.id}/versions`, { method: 'POST', body: { ...version, steps: v.steps, basedOn: v.isOriginal ? null : v.id } });
+      state.versionId = state.entry.versions.at(-1).id;
+      renderEntry('.detail');
+      refreshLibrary();
+      toast('Saved as a new version');
+    },
+  });
 
   if (scrollTo) $(scrollTo)?.scrollIntoView({ block: 'start' });
   else if (scrollPos) $('.drawer-panel').scrollTop = scrollPos;

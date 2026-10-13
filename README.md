@@ -16,6 +16,12 @@ A personal recipe library. Search for a kind of dish and get recipes, with photo
   - 🏭 processed foods: hot dogs, deli meat, margarine, processed cheese, store-bought cookies, soda and so on
 
   Search results are ranked to match your level. **Adapt** rewrites a recipe toward it: homemade swaps for "From scratch", quick store-bought swaps for "Convenience OK".
+- **Rework the ingredients** on any recipe, in search results or your library:
+  - **Adapt / Make it from scratch:** swaps canned, boxed and processed products for homemade.
+  - **🥫 Use canned & store-bought:** the opposite. Dried beans become canned beans, fresh tomatoes become canned, homemade stock becomes boxed broth, fresh herbs become dried.
+  - **🔄 Missing something?:** tick what you don't have and pick a substitute, e.g. buttermilk → milk + lemon juice, or shallot → onion + a little garlic. With an Anthropic key, Claude suggests substitutes with amounts for that specific recipe; otherwise a built-in table of about 100 common swaps is used.
+
+  Save the result as a version to cook and rate later.
 - **Prep and cook time filters.** Times come from the recipe source when it gives them. Otherwise they're estimated from the ingredients and method, and marked with "~".
 - **Import any recipe link.** Paste a URL from almost any recipe site or blog.
 - **Feedback after cooking.** Give it a star rating, quick notes ("Too salty", "Took too long", "Kids loved it"…), comments, and whether you'd make it again.
@@ -64,6 +70,7 @@ lib/time.js             Prep and cook times (from the source, or estimated) and 
 lib/profile.js          Taste profile learned from feedback, and how well recipes fit it
 lib/relevance.js        How well a recipe matches the words searched for (with synonyms)
 lib/tweaks.js           Rule-based alterations from feedback
+lib/substitutes.js      Common ingredient substitutions
 lib/claude.js           Whole-web search and feedback-driven alterations via Claude
 lib/sources/*.js        Food blogs, TheMealDB, Spoonacular, Edamam, and any-web-page (schema.org) readers
 lib/store.js            JSON-file library storage

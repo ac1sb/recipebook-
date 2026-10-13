@@ -7,7 +7,8 @@ import * as edamam from './lib/sources/edamam.js';
 import * as webpage from './lib/sources/webpage.js';
 import * as blogs from './lib/sources/blogs.js';
 import { analyzeRecipe, adaptIngredients, preferenceDistance, matchesPreference, LEVELS } from './lib/homemade.js';
-import { claudeEnabled, searchWeb, suggestAlterations, describeFeedback } from './lib/claude.js';
+import { claudeEnabled, searchWeb, suggestAlterations, suggestSubstitutes, describeFeedback } from './lib/claude.js';
+import { ruleSubstitutes } from './lib/substitutes.js';
 import { ruleBasedAlterations, FEEDBACK_TAGS } from './lib/tweaks.js';
 import { withTimes, matchesTime } from './lib/time.js';
 import { buildProfile, mergeProfiles, fit, dishQuery } from './lib/profile.js';
@@ -222,9 +223,33 @@ app.post('/api/import', wrap(async (req, res) => {
 
 app.post('/api/adapt', wrap(async (req, res) => {
   const ingredients = Array.isArray(req.body?.ingredients) ? req.body.ingredients.map(String) : [];
-  const pref = validPref(req.body?.pref);
+  // A level id, or an explicit direction: 'scratch' or 'shortcut' (canned / store-bought).
+  const pref = ['scratch', 'shortcut'].includes(req.body?.direction) ? req.body.direction : validPref(req.body?.pref);
   const adapted = adaptIngredients(ingredients, pref);
   res.json({ ...adapted, before: analyzeRecipe(ingredients) });
+}));
+
+// Substitutes for ingredients the cook doesn't have.
+app.post('/api/substitute', wrap(async (req, res) => {
+  const b = req.body || {};
+  const list = (v, max) => (Array.isArray(v) ? v.map(String).filter(Boolean).slice(0, max) : []);
+  const ingredients = list(b.ingredients, 200);
+  const missing = list(b.missing, 30);
+  if (!missing.length) return res.status(400).json({ error: 'Pick at least one ingredient you are missing.' });
+  if (claudeEnabled()) {
+    try {
+      const subs = await suggestSubstitutes({ title: String(b.title || 'Recipe'), ingredients, steps: list(b.steps, 40), missing });
+      // Keep the cook's original lines as keys, in their order.
+      const byLine = new Map(subs.map((x) => [x.ingredient.trim(), x]));
+      return res.json({
+        origin: 'claude',
+        substitutions: missing.map((m, i) => ({ ingredient: m, options: (byLine.get(m.trim()) || subs[i] || { options: [] }).options })),
+      });
+    } catch (err) {
+      console.warn(`Claude substitutes failed, using built-in table: ${err.message}`);
+    }
+  }
+  res.json({ origin: 'rules', substitutions: ruleSubstitutes(missing) });
 }));
 
 // ---------- Library ----------
