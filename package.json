@@ -1,0 +1,28 @@
+{
+  "name": "borsari-kitchen",
+  "version": "1.0.0",
+  "description": "Search recipes from many online sources, tune how homemade they are, and refine them with feedback.",
+  "main": "server.js",
+  "scripts": {
+    "start": "node --env-file-if-exists=.env server.js",
+    "dev": "node --watch --env-file-if-exists=.env server.js",
+    "test": "node --test test/*.test.js"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/ac1sb/recipebook-.git"
+  },
+  "license": "MIT",
+  "bugs": {
+    "url": "https://github.com/ac1sb/recipebook-/issues"
+  },
+  "homepage": "https://github.com/ac1sb/recipebook-#readme",
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.133.0",
+    "express": "^4.22.3"
+  },
+  "type": "module",
+  "engines": {
+    "node": ">=22"
+  }
+}

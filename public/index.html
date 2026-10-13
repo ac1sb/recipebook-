@@ -1,0 +1,91 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>The Borsari Kitchen</title>
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🍲</text></svg>">
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">🍲 <span>The Borsari Kitchen</span></div>
+    <nav class="tabs" role="tablist">
+      <button class="tab active" data-view="search" role="tab">Find recipes</button>
+      <button class="tab" data-view="library" role="tab">My library <span id="libCount" class="pill"></span></button>
+    </nav>
+  </header>
+
+  <main>
+    <!-- SEARCH -->
+    <section id="view-search" class="view active">
+      <form id="searchForm" class="search-card">
+        <div class="search-row">
+          <input id="q" type="search" placeholder="What do you feel like? e.g. chicken pot pie, lasagna, vegan curry…" autocomplete="off" required>
+          <button type="submit" class="primary">Search</button>
+        </div>
+
+        <div class="pref">
+          <div class="pref-head">
+            <span class="label">How homemade?</span>
+            <span id="prefDesc" class="muted"></span>
+          </div>
+          <div id="prefScale" class="scale" role="radiogroup" aria-label="Homemade preference"></div>
+        </div>
+
+        <div class="sources">
+          <span class="label">Sources</span>
+          <div id="sourceList" class="chips"></div>
+        </div>
+
+        <details class="import">
+          <summary>Have a recipe link? Import it</summary>
+          <div class="search-row">
+            <input id="importUrl" type="url" placeholder="https://any-recipe-site.com/your-favorite-recipe">
+            <button type="button" id="importBtn">Import</button>
+          </div>
+        </details>
+      </form>
+
+      <div id="searchStatus" class="status"></div>
+      <div id="results" class="grid"></div>
+      <div id="webStatus" class="status"></div>
+      <div id="webResults" class="grid"></div>
+    </section>
+
+    <!-- LIBRARY -->
+    <section id="view-library" class="view">
+      <div class="library-head">
+        <h2>My library</h2>
+        <input id="libFilter" type="search" placeholder="Filter my recipes…">
+      </div>
+      <div id="library" class="grid"></div>
+    </section>
+  </main>
+
+  <!-- Recipe detail drawer -->
+  <div id="drawer" class="drawer" hidden>
+    <div class="drawer-backdrop" data-close></div>
+    <article class="drawer-panel" role="dialog" aria-modal="true">
+      <button class="close" data-close aria-label="Close">✕</button>
+      <div id="drawerBody"></div>
+    </article>
+  </div>
+
+  <div id="toast" class="toast" hidden></div>
+
+  <template id="cardTpl">
+    <article class="card" tabindex="0">
+      <div class="thumb"><img loading="lazy" alt=""><span class="badge source"></span></div>
+      <div class="card-body">
+        <h3></h3>
+        <div class="meta"></div>
+        <div class="meter"><div class="meter-fill"></div></div>
+        <div class="meter-label"></div>
+      </div>
+    </article>
+  </template>
+
+  <script src="app.js" type="module"></script>
+</body>
+</html>
