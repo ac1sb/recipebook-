@@ -13,14 +13,18 @@ import { withTimes, matchesTime } from './lib/time.js';
 import { buildProfile, mergeProfiles, fit, dishQuery } from './lib/profile.js';
 import { filterRelevant } from './lib/relevance.js';
 import { createStore } from './lib/store.js';
+import { saveImage, deleteImage, isLocal } from './lib/images.js';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const SOURCES = { themealdb, spoonacular, edamam };
-const store = createStore(process.env.RECIPEBOOK_DATA || path.join(here, 'data', 'library.json'));
+const dataFile = process.env.RECIPEBOOK_DATA || path.join(here, 'data', 'library.json');
+const imagesDir = path.join(path.dirname(dataFile), 'images');
+const store = createStore(dataFile);
 
 export const app = express();
 app.use(express.json({ limit: '1mb' }));
 app.use(express.static(path.join(here, 'public')));
+app.use('/images', express.static(imagesDir, { maxAge: '30d', fallthrough: false }));
 
 const wrap = (fn) => (req, res, next) => fn(req, res).catch(next);
 const validPref = (p) => (LEVELS.some((l) => l.id === p) ? p : 'balanced');
@@ -265,10 +269,37 @@ app.get('/api/library', wrap(async (_req, res) => {
   res.json((await store.list()).map(summary));
 }));
 
+// Makes the saved copy self-contained: downloads the photo, and fills in the
+// method from the original page if the source didn't include it. Safe to re-run.
+async function archive(id) {
+  const entry = await store.get(id);
+  if (!entry) return null;
+  const r = entry.recipe;
+  const patch = {};
+  if (!r.steps.length && r.url) {
+    const page = await webpage.fromUrl(r.url, { timeout: 10000 }).catch(() => null);
+    if (page?.steps.length) patch.steps = page.steps;
+    if (!r.image && page?.image) patch.image = page.image;
+  }
+  const remote = patch.image || r.image;
+  if (remote && !isLocal(remote)) {
+    try {
+      patch.image = await saveImage(remote, imagesDir, entry.id);
+      patch.originalImage = remote;
+    } catch (err) {
+      console.warn(`Could not save photo for "${r.title}": ${err.message}`);
+    }
+  }
+  return store.update(id, (e) => {
+    Object.assign(e.recipe, patch);
+    e.archivedAt = new Date().toISOString();
+  });
+}
+
 app.post('/api/library', wrap(async (req, res) => {
   const recipe = cleanRecipe(req.body?.recipe);
   const entry = await store.add(recipe);
-  res.status(201).json(detail(entry));
+  res.status(201).json(detail((await archive(entry.id)) || entry));
 }));
 
 app.get('/api/library/:id', wrap(async (req, res) => {
@@ -277,6 +308,8 @@ app.get('/api/library/:id', wrap(async (req, res) => {
 }));
 
 app.delete('/api/library/:id', wrap(async (req, res) => {
+  const entry = await store.get(req.params.id);
+  if (entry) await deleteImage(entry.recipe.image, imagesDir);
   const ok = await store.remove(req.params.id);
   res.status(ok ? 204 : 404).end();
 }));
@@ -435,6 +468,10 @@ app.use((err, _req, res, _next) => {
 
 if (process.argv[1] === fileURLToPath(import.meta.url)) {
   const port = Number(process.env.PORT) || 3000;
+  // Recipes saved before photos were kept locally: copy them now, in the background.
+  store.list().then(async (entries) => {
+    for (const e of entries) if (!e.archivedAt) await archive(e.id).catch(() => {});
+  });
   app.listen(port, () => {
     console.log(`The Borsari Kitchen is running at http://localhost:${port}`);
     console.log(`Claude features: ${claudeEnabled() ? 'on' : 'off (set ANTHROPIC_API_KEY to enable)'}`);

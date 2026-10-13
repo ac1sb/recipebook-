@@ -45,7 +45,9 @@ Then open http://localhost:3000.
 
 Without an Anthropic key, alterations come from built-in rules: quantity tweaks for tags like "Too bland" or "Too spicy", plus homemade and shortcut swaps.
 
-Your library is saved in `data/library.json`. Set `RECIPEBOOK_DATA` to store it somewhere else.
+Your library is saved in `data/library.json`, and photos of saved recipes in `data/images/`. Set `RECIPEBOOK_DATA` to store them somewhere else.
+
+**Saved recipes are a full local copy.** When you save a recipe, the site stores the ingredients, method, times and a copy of the photo on your computer, so it stays in your library even if the original site removes it or changes it. If a source only gave the ingredients, the method is fetched from the original page at save time. Recipes saved before this feature get their photos copied the next time you start the site. To back up your library, copy the `data` folder.
 
 ## Notes
 
@@ -65,5 +67,6 @@ lib/tweaks.js           Rule-based alterations from feedback
 lib/claude.js           Whole-web search and feedback-driven alterations via Claude
 lib/sources/*.js        Food blogs, TheMealDB, Spoonacular, Edamam, and any-web-page (schema.org) readers
 lib/store.js            JSON-file library storage
+lib/images.js           Local copies of saved recipes' photos
 public/                 The web app (HTML/CSS/JS, no build step)
 ```

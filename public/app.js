@@ -542,6 +542,7 @@ function renderEntry(scrollTo) {
           <span>From <b>${esc(r.sourceName)}</b></span>
           ${r.totalTime ? `<span>· ⏱ ${formatTime(r.totalTime)}</span>` : ''}
           ${r.url ? `<a href="${esc(r.url)}" target="_blank" rel="noopener">Original recipe ↗</a>` : ''}
+          ${e.archivedAt ? `<span class="tagline" title="The ingredients, method${r.image?.startsWith('/images/') ? ' and photo' : ''} are stored on this computer, so this recipe stays even if the original site removes it.">📦 Saved copy</span>` : ''}
           <button class="ghost small" id="removeEntry">Remove from library</button>
         </div>
       </div>
