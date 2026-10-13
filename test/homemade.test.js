@@ -36,6 +36,14 @@ test('scores recipes from shortcut-heavy to from-scratch', () => {
   assert.equal(scratch.level, 'From scratch');
 });
 
+test('flags processed foods, not just packaging', () => {
+  for (const line of ['8 hot dogs, sliced', '1/2 cup margarine', '1 cup crushed Ritz crackers', '6 slices Velveeta']) {
+    assert.equal(classifyIngredient(line)?.kind, 'processed', line);
+  }
+  assert.equal(classifyIngredient('1 can black beans')?.kind, 'packaged');
+  assert.equal(analyzeRecipe(['4 hot dogs', '1 onion']).processedCount, 1);
+});
+
 test('adapts ingredients toward the preference', () => {
   const scratch = adaptIngredients(['2 cans black beans, drained', '1 onion'], 'scratch');
   assert.equal(scratch.changes.length, 1);

@@ -27,11 +27,28 @@
 
         <div class="pref">
           <div class="pref-head">
-            <span class="label">How homemade?</span>
+            <span class="label">How processed?</span>
             <span id="prefDesc" class="muted"></span>
           </div>
           <div id="prefScale" class="scale" role="radiogroup" aria-label="Homemade preference"></div>
         </div>
+
+        <div class="filters">
+          <label class="filter"><span class="label">Prep time</span>
+            <select id="maxPrep">
+              <option value="">Any</option><option value="10">10 min or less</option><option value="15">15 min or less</option>
+              <option value="20">20 min or less</option><option value="30">30 min or less</option><option value="45">45 min or less</option><option value="60">1 hour or less</option>
+            </select></label>
+          <label class="filter"><span class="label">Cook time</span>
+            <select id="maxCook">
+              <option value="">Any</option><option value="15">15 min or less</option><option value="30">30 min or less</option>
+              <option value="45">45 min or less</option><option value="60">1 hour or less</option><option value="90">1½ hours or less</option><option value="120">2 hours or less</option>
+            </select></label>
+          <label class="chip" id="personalizeWrap" hidden title="Ranks results using what you've told us after cooking">
+            <input type="checkbox" id="personalize" checked> Use my feedback to rank results
+          </label>
+        </div>
+        <div id="tasteNote" class="muted small-note" hidden></div>
 
         <div class="sources">
           <span class="label">Sources</span>
@@ -59,6 +76,7 @@
         <h2>My library</h2>
         <input id="libFilter" type="search" placeholder="Filter my recipes…">
       </div>
+      <div id="taste" class="panel taste" hidden></div>
       <div id="library" class="grid"></div>
     </section>
   </main>
@@ -82,6 +100,7 @@
         <div class="meta"></div>
         <div class="meter"><div class="meter-fill"></div></div>
         <div class="meter-label"></div>
+        <div class="fit"></div>
       </div>
     </article>
   </template>

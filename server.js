@@ -6,8 +6,10 @@ import * as spoonacular from './lib/sources/spoonacular.js';
 import * as edamam from './lib/sources/edamam.js';
 import * as webpage from './lib/sources/webpage.js';
 import { analyzeRecipe, adaptIngredients, preferenceDistance, matchesPreference, LEVELS } from './lib/homemade.js';
-import { claudeEnabled, searchWeb, suggestAlterations } from './lib/claude.js';
+import { claudeEnabled, searchWeb, suggestAlterations, describeFeedback } from './lib/claude.js';
 import { ruleBasedAlterations, FEEDBACK_TAGS } from './lib/tweaks.js';
+import { withTimes, matchesTime } from './lib/time.js';
+import { buildProfile, mergeProfiles, fit, dishQuery } from './lib/profile.js';
 import { createStore } from './lib/store.js';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
@@ -20,17 +22,49 @@ app.use(express.static(path.join(here, 'public')));
 
 const wrap = (fn) => (req, res, next) => fn(req, res).catch(next);
 const validPref = (p) => (LEVELS.some((l) => l.id === p) ? p : 'balanced');
+const minutes = (v) => (Number(v) > 0 ? Math.min(Number(v), 1440) : null);
 
 function withAnalysis(recipe) {
-  return { ...recipe, homemade: analyzeRecipe(recipe.ingredients) };
+  return { ...withTimes(recipe), homemade: analyzeRecipe(recipe.ingredients) };
 }
 
-function rank(recipes, pref) {
+function timeFilters(q = {}) {
+  return { maxPrep: minutes(q.maxPrep), maxCook: minutes(q.maxCook), maxTotal: minutes(q.maxTotal) };
+}
+
+// Best matches first: processing level, then how well the recipe fits the
+// cook's feedback (when a profile is given), then the source's own order.
+function rank(recipes, pref, { profile = null, reference = null, times = {} } = {}) {
   return recipes
-    .map((r, i) => ({ r: withAnalysis(r), i }))
-    .map(({ r, i }) => ({ ...r, matchesPreference: matchesPreference(r.homemade.score, pref), _d: preferenceDistance(r.homemade.score, pref) + i * 0.5 }))
+    .map(withAnalysis)
+    .filter((r) => matchesTime(r, times))
+    .map((r, i) => {
+      const f = fit(r, profile, reference);
+      const processing = preferenceDistance(r.homemade.score, pref);
+      return { ...r, matchesPreference: matchesPreference(r.homemade.score, pref), fit: f, _d: processing - f.score * 4 + i * 0.5 };
+    })
     .sort((a, b) => a._d - b._d)
     .map(({ _d, ...r }) => r);
+}
+
+async function globalProfile() {
+  return buildProfile(await store.list());
+}
+
+async function searchSources(q, ids, { limit = 12, times = {} } = {}) {
+  const active = Object.values(SOURCES).filter((s) => ids.includes(s.info.id) && s.info.enabled());
+  const maxTotal = times.maxTotal || (times.maxPrep && times.maxCook ? times.maxPrep + times.maxCook : null);
+  const settled = await Promise.allSettled(active.map((s) => s.search(q, { limit, maxTotal })));
+  const errors = [];
+  const lists = settled.map((r, i) => {
+    if (r.status === 'fulfilled') return r.value;
+    errors.push(`${active[i].info.name}: ${r.reason.message}`);
+    return [];
+  });
+  // Interleave sources so one provider doesn't crowd out the others before ranking.
+  const merged = [];
+  for (let i = 0; i < Math.max(0, ...lists.map((l) => l.length)); i++) for (const l of lists) if (l[i]) merged.push(l[i]);
+  return { merged, errors };
 }
 
 function cleanRecipe(r = {}) {
@@ -47,7 +81,10 @@ function cleanRecipe(r = {}) {
     url: r.url ? String(r.url) : null,
     ingredients: list(r.ingredients),
     steps: list(r.steps),
-    totalTime: Number(r.totalTime) || null,
+    // Only keep times that came from the source; estimates are recomputed on read.
+    prepTime: r.timeEstimated ? null : Number(r.prepTime) || null,
+    cookTime: r.timeEstimated ? null : Number(r.cookTime) || null,
+    totalTime: r.timeEstimated ? null : Number(r.totalTime) || null,
     servings: r.servings ? String(r.servings) : null,
     description: String(r.description || '').slice(0, 1000),
     tags: list(r.tags).slice(0, 10),
@@ -70,7 +107,13 @@ app.get('/api/status', wrap(async (_req, res) => {
 }));
 
 app.put('/api/settings', wrap(async (req, res) => {
-  res.json(await store.updateSettings({ pref: validPref(req.body?.pref) }));
+  const b = req.body || {};
+  const patch = {};
+  if ('pref' in b) patch.pref = validPref(b.pref);
+  if ('maxPrep' in b) patch.maxPrep = minutes(b.maxPrep);
+  if ('maxCook' in b) patch.maxCook = minutes(b.maxCook);
+  if ('personalize' in b) patch.personalize = b.personalize !== false;
+  res.json(await store.updateSettings(patch));
 }));
 
 // ---------- Search ----------
@@ -79,20 +122,14 @@ app.get('/api/search', wrap(async (req, res) => {
   const q = String(req.query.q || '').trim();
   if (!q) return res.status(400).json({ error: 'Enter something to search for.' });
   const pref = validPref(req.query.pref);
-  const wanted = String(req.query.sources || Object.keys(SOURCES).join(',')).split(',');
-  const active = Object.values(SOURCES).filter((s) => wanted.includes(s.info.id) && s.info.enabled());
-
-  const settled = await Promise.allSettled(active.map((s) => s.search(q, { limit: 12 })));
-  const errors = [];
-  const lists = settled.map((r, i) => {
-    if (r.status === 'fulfilled') return r.value;
-    errors.push(`${active[i].info.name}: ${r.reason.message}`);
-    return [];
-  });
-  // Interleave sources so one provider doesn't crowd out the others before ranking.
-  const merged = [];
-  for (let i = 0; i < Math.max(0, ...lists.map((l) => l.length)); i++) for (const l of lists) if (l[i]) merged.push(l[i]);
-  res.json({ results: rank(merged, pref), errors });
+  const times = timeFilters(req.query);
+  const filtering = Object.values(times).some(Boolean);
+  const profile = req.query.personalize === '0' ? null : await globalProfile();
+  const ids = String(req.query.sources || Object.keys(SOURCES).join(',')).split(',');
+  // Fetch more when filtering by time so enough recipes are left afterwards.
+  const { merged, errors } = await searchSources(q, ids, { limit: filtering ? 30 : 12, times });
+  const results = rank(merged, pref, { profile, times });
+  res.json({ results, errors, filteredOut: merged.length - results.length, personalized: profile?.feedbackCount ? profile.summary : null });
 }));
 
 app.get('/api/search/web', wrap(async (req, res) => {
@@ -100,7 +137,23 @@ app.get('/api/search/web', wrap(async (req, res) => {
   const q = String(req.query.q || '').trim();
   if (!q) return res.status(400).json({ error: 'Enter something to search for.' });
   const pref = validPref(req.query.pref);
-  res.json({ results: rank(await searchWeb(q, { pref, limit: 10 }), pref) });
+  const times = timeFilters(req.query);
+  const profile = req.query.personalize === '0' ? null : await globalProfile();
+  const found = await searchWeb(q, { pref, limit: 12, times, wishes: profileWishes(profile) });
+  res.json({ results: rank(found, pref, { profile, times }) });
+}));
+
+function profileWishes(profile) {
+  if (!profile?.feedbackCount) return '';
+  const parts = [];
+  if (profile.summary.length) parts.push(`they tend to prefer ${profile.summary.join(', ')}`);
+  if (profile.topLikes.length) parts.push(`they rate dishes with ${profile.topLikes.join(', ')} highly`);
+  if (profile.topDislikes.length) parts.push(`they rated dishes with ${profile.topDislikes.join(', ')} low`);
+  return parts.join('; ');
+}
+
+app.get('/api/profile', wrap(async (_req, res) => {
+  res.json(await globalProfile());
 }));
 
 app.get('/api/recipe', wrap(async (req, res) => {
@@ -131,6 +184,8 @@ app.post('/api/adapt', wrap(async (req, res) => {
 
 // ---------- Library ----------
 
+const pickTimes = (r) => ({ prepTime: r.prepTime, cookTime: r.cookTime, totalTime: r.totalTime, timeEstimated: r.timeEstimated });
+
 function summary(entry) {
   const ratings = entry.feedback.map((f) => f.rating).filter(Boolean);
   const fav = entry.versions.find((v) => v.id === entry.favoriteVersionId);
@@ -142,6 +197,7 @@ function summary(entry) {
     image: entry.recipe.image,
     sourceName: entry.recipe.sourceName,
     homemade: analyzeRecipe((fav || entry.recipe).ingredients),
+    ...pickTimes(withTimes(entry.recipe)),
     timesMade: entry.feedback.length,
     avgRating: ratings.length ? ratings.reduce((a, b) => a + b, 0) / ratings.length : null,
     versions: entry.versions.length,
@@ -217,7 +273,7 @@ app.post('/api/library/:id/alterations', wrap(async (req, res) => {
   const pref = validPref(req.body?.pref || (await store.settings()).pref);
   const version = entry.versions.find((v) => v.id === req.body?.versionId) || null;
   const request = String(req.body?.request || '').slice(0, 1000);
-  const args = { recipe: entry.recipe, version, feedback: entry.feedback, pref, request };
+  const args = { recipe: entry.recipe, version, feedback: entry.feedback, pref, request, tastes: profileWishes(await globalProfile()) };
 
   let suggestions;
   let note = null;
@@ -233,6 +289,49 @@ app.post('/api/library/:id/alterations', wrap(async (req, res) => {
     e.suggestions = suggestions.map((s) => ({ ...s, id: store.newId(), basedOn, createdAt: new Date().toISOString() }));
   });
   res.json({ ...detail(updated), note });
+}));
+
+// Other recipes for the same dish, ranked by how well they address this
+// recipe's feedback (and the cook's overall tastes).
+app.post('/api/library/:id/similar', wrap(async (req, res) => {
+  const entry = await requireEntry(req, res);
+  if (!entry) return;
+  const b = req.body || {};
+  const pref = validPref(b.pref || (await store.settings()).pref);
+  const version = entry.versions.find((v) => v.id === (b.versionId ?? entry.favoriteVersionId));
+  const reference = withAnalysis(version ? { ...entry.recipe, ingredients: version.ingredients, steps: version.steps } : entry.recipe);
+  const library = await store.list();
+  const profile = mergeProfiles(buildProfile([entry], { weight: 1.5 }), buildProfile(library), 0.5);
+
+  const times = timeFilters(b);
+  if (profile.prefs?.quick > 0.3 && reference.totalTime && !times.maxTotal) times.maxTotal = reference.totalTime;
+  const query = dishQuery(entry.recipe.title);
+  const { merged, errors } = await searchSources(query, Object.keys(SOURCES), { limit: 24, times });
+
+  let candidates = merged;
+  if (b.includeWeb && claudeEnabled()) {
+    const wishes = [describeFeedback(entry.feedback), profileWishes(profile)].filter(Boolean).join('\n');
+    const web = await searchWeb(query, { pref, limit: 10, times, wishes: `They have cooked "${entry.recipe.title}" and said:\n${wishes}\nLook for versions of this dish that address that feedback.` })
+      .catch((err) => (errors.push(`Web: ${err.message}`), []));
+    candidates = [...web, ...merged];
+  }
+
+  const savedIds = new Set(library.map((e) => e.recipe.id));
+  const sameTitle = (t) => t.trim().toLowerCase() === entry.recipe.title.trim().toLowerCase();
+  const results = rank(candidates.filter((r) => r.id !== entry.recipe.id && !sameTitle(r.title)), pref, { profile, reference, times })
+    .map((r) => {
+      const diff = r.homemade.score - reference.homemade.score;
+      if (pref !== 'shortcut' && diff >= 10) r.fit.reasons.unshift('less processed than yours');
+      if (pref === 'shortcut' && r.totalTime && reference.totalTime && r.totalTime < reference.totalTime - 10 && !r.fit.reasons.some((x) => x.includes('quicker'))) r.fit.reasons.push(`${reference.totalTime - r.totalTime} min quicker`);
+      return { ...r, inLibrary: savedIds.has(r.id) };
+    })
+    .sort((a, b) => b.fit.score + b.fit.reasons.length - (a.fit.score + a.fit.reasons.length))
+    .slice(0, 12);
+
+  const lookingFor = [...profile.summary];
+  if (times.maxTotal) lookingFor.push(`ready in ${times.maxTotal} min or less`);
+  if (pref !== 'balanced') lookingFor.push(LEVELS.find((l) => l.id === pref).label.toLowerCase());
+  res.json({ query, results, errors, lookingFor, feedbackCount: entry.feedback.length });
 }));
 
 app.post('/api/library/:id/versions', wrap(async (req, res) => {

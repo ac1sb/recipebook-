@@ -2,7 +2,7 @@ const $ = (sel, root = document) => root.querySelector(sel);
 const $$ = (sel, root = document) => [...root.querySelectorAll(sel)];
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]);
 
-const LEVEL_ICONS = { shortcut: '🥫', balanced: '⚖️', mostly: '🧺', scratch: '👩‍🍳' };
+const LEVEL_ICONS = { shortcut: '🥫', balanced: '⚖️', mostly: '🥕', scratch: '👩‍🍳' };
 
 const state = {
   status: null,
@@ -11,7 +11,13 @@ const state = {
   results: new Map(),
   library: [],
   entry: null, // open library entry
+  similar: null, // last "find better matches" result
   versionId: null, // selected version in the open entry (null = original)
+  maxPrep: '',
+  maxCook: '',
+  personalize: true,
+  profile: null,
+  lastQuery: '',
 };
 
 async function api(path, opts = {}) {
@@ -45,7 +51,27 @@ const spinner = '<span class="spinner"></span>';
 
 async function init() {
   state.status = await api('/api/status');
-  state.pref = state.status.settings.pref || 'balanced';
+  const settings = state.status.settings;
+  state.pref = settings.pref || 'balanced';
+  state.maxPrep = settings.maxPrep || '';
+  state.maxCook = settings.maxCook || '';
+  state.personalize = settings.personalize !== false;
+  $('#maxPrep').value = state.maxPrep;
+  $('#maxCook').value = state.maxCook;
+  $('#personalize').checked = state.personalize;
+  for (const [id, key] of [['#maxPrep', 'maxPrep'], ['#maxCook', 'maxCook']]) {
+    $(id).addEventListener('change', () => {
+      state[key] = $(id).value;
+      saveSettings({ [key]: state[key] || null });
+      researchIfShowing();
+    });
+  }
+  $('#personalize').addEventListener('change', () => {
+    state.personalize = $('#personalize').checked;
+    saveSettings({ personalize: state.personalize });
+    renderTasteNote();
+    researchIfShowing();
+  });
   for (const s of state.status.sources) if (s.enabled) state.sources.add(s.id);
   renderPref();
   renderSources();
@@ -80,9 +106,8 @@ function renderPref() {
     b.addEventListener('click', async () => {
       state.pref = b.dataset.pref;
       renderPref();
-      api('/api/settings', { method: 'PUT', body: { pref: state.pref } }).catch(() => {});
-      // Re-rank what is already on screen.
-      if (state.results.size) rerankResults();
+      saveSettings({ pref: state.pref });
+      researchIfShowing();
     }),
   );
 }
@@ -100,26 +125,37 @@ function renderSources() {
 
 // ---------- Search ----------
 
-const levelOrder = { shortcut: 0, balanced: 55, mostly: 75, scratch: 90 };
+function saveSettings(patch) {
+  api('/api/settings', { method: 'PUT', body: patch }).catch(() => {});
+}
 
-function rerankResults() {
-  for (const grid of [$('#results'), $('#webResults')]) {
-    const cards = $$('.card', grid);
-    const target = { shortcut: 40, balanced: 70, mostly: 85, scratch: 100 }[state.pref];
-    cards
-      .map((c) => ({ c, s: Number(c.dataset.score) }))
-      .sort((a, b) => Math.abs(a.s - target) - Math.abs(b.s - target))
-      .forEach(({ c, s }) => {
-        c.classList.toggle('dim', s < levelOrder[state.pref]);
-        grid.appendChild(c);
-      });
-  }
+// Filters and preferences are applied by the server, so re-run the last search.
+function researchIfShowing() {
+  if (state.lastQuery) search(state.lastQuery);
+}
+
+function searchParams(q) {
+  const p = new URLSearchParams({ q, pref: state.pref, personalize: state.personalize ? '1' : '0' });
+  if (state.maxPrep) p.set('maxPrep', state.maxPrep);
+  if (state.maxCook) p.set('maxCook', state.maxCook);
+  return p;
+}
+
+function renderTasteNote() {
+  const p = state.profile;
+  const has = p?.feedbackCount > 0;
+  $('#personalizeWrap').hidden = !has;
+  const note = $('#tasteNote');
+  const bits = has ? [...p.summary, ...(p.topLikes.length ? [`more ${p.topLikes.slice(0, 3).join(', ')}`] : [])] : [];
+  note.hidden = !(has && state.personalize && bits.length);
+  note.textContent = bits.length ? `From your feedback, results favor: ${bits.join(' · ')}` : '';
 }
 
 async function search(q) {
   if (!q) return;
   const btn = $('#searchForm button[type=submit]');
   btn.disabled = true;
+  state.lastQuery = q;
   state.results.clear();
   $('#results').innerHTML = '';
   $('#webResults').innerHTML = '';
@@ -130,10 +166,14 @@ async function search(q) {
   if (apiSources.length) {
     setStatus($('#searchStatus'), `${spinner} Searching ${apiSources.length} recipe source${apiSources.length > 1 ? 's' : ''}…`);
     tasks.push(
-      api(`/api/search?q=${encodeURIComponent(q)}&pref=${state.pref}&sources=${apiSources.join(',')}`)
-        .then(({ results, errors }) => {
+      api(`/api/search?${searchParams(q)}&sources=${apiSources.join(',')}`)
+        .then(({ results, errors, filteredOut, personalized }) => {
           renderResults($('#results'), results);
-          const msg = results.length ? `${results.length} recipes, best matches for “${esc(levelLabel())}” first.` : `No recipes found for “${esc(q)}”.`;
+          const timeNote = filteredOut ? ` ${filteredOut} hidden by your time filters.` : '';
+          const fitNote = personalized?.length ? ' Ranked using your feedback.' : '';
+          const msg = results.length
+            ? `${results.length} recipes, best matches for “${esc(levelLabel())}” first.${fitNote}${timeNote}`
+            : `No recipes found for “${esc(q)}”${filteredOut ? ` within your time limits (${filteredOut} recipes were too long — try loosening the prep or cook time)` : ''}.`;
           setStatus($('#searchStatus'), msg + (errors.length ? ` <span class="muted">(${esc(errors.join('; '))})</span>` : ''));
         })
         .catch((err) => setStatus($('#searchStatus'), esc(err.message), 'error')),
@@ -145,7 +185,7 @@ async function search(q) {
   if (state.sources.has('web')) {
     setStatus($('#webStatus'), `${spinner} Claude is searching recipe sites across the web… (this takes 20–60 seconds)`);
     tasks.push(
-      api(`/api/search/web?q=${encodeURIComponent(q)}&pref=${state.pref}`)
+      api(`/api/search/web?${searchParams(q)}`)
         .then(({ results }) => {
           setStatus($('#webStatus'), results.length ? `<b>From around the web:</b> ${results.length} recipes from ${new Set(results.map((r) => r.sourceName)).size} sites` : 'No readable recipes found on the web for that search.');
           renderResults($('#webResults'), results);
@@ -168,8 +208,9 @@ function renderResults(grid, results) {
       title: r.title,
       image: r.image,
       source: r.sourceName,
-      meta: [r.totalTime && `⏱ ${formatTime(r.totalTime)}`, `${r.ingredients.length} ingredients`, r.description && r.description.slice(0, 40)],
+      meta: [timeSummary(r), `${r.ingredients.length} ingredients`, r.description && r.description.slice(0, 40)],
       homemade: r.homemade,
+      fit: r.fit,
     });
     card.dataset.score = r.homemade.score;
     card.classList.toggle('dim', !r.matchesPreference);
@@ -179,7 +220,19 @@ function renderResults(grid, results) {
   }
 }
 
-function buildCard({ title, image, source, meta, homemade, extra }) {
+function timeSummary(r) {
+  if (!r.prepTime && !r.cookTime) return r.totalTime ? `⏱ ${formatTime(r.totalTime)}` : '';
+  const t = r.timeEstimated ? '~' : '';
+  return `Prep ${t}${formatTime(r.prepTime) || '0 min'} · Cook ${t}${formatTime(r.cookTime) || '0 min'}`;
+}
+
+function fitHtml(fit) {
+  if (!fit) return '';
+  return [...fit.reasons.map((x) => `<span class="good" title="Matches your feedback">✓ ${esc(x)}</span>`),
+    ...fit.warnings.map((x) => `<span class="bad" title="From your feedback">! ${esc(x)}</span>`)].join('');
+}
+
+function buildCard({ title, image, source, meta, homemade, fit, extra }) {
   const card = $('#cardTpl').content.firstElementChild.cloneNode(true);
   const img = $('img', card);
   if (image) {
@@ -197,7 +250,8 @@ function buildCard({ title, image, source, meta, homemade, extra }) {
   $('h3', card).textContent = title;
   $('.meta', card).innerHTML = meta.filter(Boolean).map((m) => `<span>${esc(m)}</span>`).join('') + (extra || '');
   $('.meter-fill', card).style.width = `${homemade.score}%`;
-  $('.meter-label', card).textContent = `${homemade.level} · ${homemade.score}% homemade${homemade.convenienceCount ? ` · ${homemade.convenienceCount} shortcut item${homemade.convenienceCount > 1 ? 's' : ''}` : ''}`;
+  $('.meter-label', card).textContent = `${homemade.level} (${homemade.score}%)${homemade.convenienceCount ? ` · ${homemade.convenienceCount} processed/packaged item${homemade.convenienceCount > 1 ? 's' : ''}` : ''}`;
+  $('.fit', card).innerHTML = fitHtml(fit);
   return card;
 }
 
@@ -253,11 +307,11 @@ function ingredientsHtml(items, { changed = new Set() } = {}) {
   return `<ul class="ingredients">${items
     .map((i) => {
       const f = i.flag;
-      let cls = f ? f.type : '';
+      let cls = f ? `${f.type} ${f.kind || ''}` : '';
       if (f?.type === 'homemade' && showShortcuts) cls += ' show-short';
       if (changed.has(i.text)) cls += ' changed';
       let note = '';
-      if (f?.type === 'convenience') note = `<span class="flag"><b>🥫 ${esc(f.label)}</b> — from scratch: ${esc(f.tip)}</span>`;
+      if (f?.type === 'convenience') note = `<span class="flag"><b>${f.kind === 'processed' ? '🏭' : '🥫'} ${esc(f.label)}</b> — from scratch: ${esc(f.tip)}</span>`;
       else if (f?.type === 'homemade' && showShortcuts) note = `<span class="flag"><b>⚡ Shortcut</b> — ${esc(f.tip)}</span>`;
       return `<li class="${cls}">${esc(i.text)}${note}</li>`;
     })
@@ -273,10 +327,20 @@ function stepsHtml(steps, url) {
 
 function scoreHtml(h) {
   return `<div class="scorebox"><div class="score-ring" style="--p:${h.score}">${h.score}%</div>
-    <div><b>${esc(h.level)}</b><br><span class="muted">${h.convenienceCount ? `${h.convenienceCount} canned / boxed / store-bought item${h.convenienceCount > 1 ? 's' : ''} (highlighted)` : 'No convenience products detected'}</span></div></div>`;
+    <div><b>${esc(h.level)}</b> — ${h.score}% made from scratch<br><span class="muted">${processedText(h)}</span></div></div>`;
 }
 
-async function openRecipe(r) {
+function processedText(h) {
+  if (!h.convenienceCount) return 'No processed or packaged products detected';
+  const processed = h.processedCount || 0;
+  const packaged = h.convenienceCount - processed;
+  const parts = [];
+  if (processed) parts.push(`${processed} processed food${processed > 1 ? 's' : ''} 🏭`);
+  if (packaged) parts.push(`${packaged} canned / boxed / store-bought item${packaged > 1 ? 's' : ''} 🥫`);
+  return `${parts.join(' and ')} (highlighted below)`;
+}
+
+async function openRecipe(r, { backTo = null } = {}) {
   const inLibrary = state.library.find((e) => e.sourceId === r.id);
   render(r);
 
@@ -292,17 +356,19 @@ async function openRecipe(r) {
   function render(recipe, adapted) {
     const items = adapted ? adapted.items : recipe.homemade.items;
     openDrawer(`
+      ${backTo ? `<button class="back small" id="backBtn">← Back to ${esc(backTo.title)}</button>` : ''}
       ${heroHtml(recipe.image, recipe.title)}
       <div class="detail">
         <div>
           <h2>${esc(recipe.title)}</h2>
           <div class="row muted">
             <span>From <b>${esc(recipe.sourceName)}</b></span>
-            ${recipe.totalTime ? `<span>· ⏱ ${formatTime(recipe.totalTime)}</span>` : ''}
+            ${timeSummary(recipe) ? `<span title="${recipe.timeEstimated ? 'Estimated from the ingredients and method' : 'From the recipe'}">· ⏱ ${timeSummary(recipe)}${recipe.timeEstimated ? ' (estimated)' : ''}</span>` : ''}
             ${recipe.servings ? `<span>· 🍽 ${esc(recipe.servings)}</span>` : ''}
             ${recipe.url ? `<a href="${esc(recipe.url)}" target="_blank" rel="noopener">Original recipe ↗</a>` : ''}
           </div>
           ${recipe.description ? `<p class="muted">${esc(recipe.description)}</p>` : ''}
+          ${recipe.fit && (recipe.fit.reasons.length || recipe.fit.warnings.length) ? `<div class="fit" style="margin-top:8px">${fitHtml(recipe.fit)}</div>` : ''}
         </div>
         <div class="row">
           ${inLibrary ? `<button class="primary" id="openLib">📖 Open in my library</button>` : `<button class="primary" id="saveBtn">＋ Save to my library</button>`}
@@ -332,6 +398,7 @@ async function openRecipe(r) {
       openLibraryEntry(entry.id);
     });
     $('#openLib')?.addEventListener('click', () => openLibraryEntry(inLibrary.id));
+    $('#backBtn')?.addEventListener('click', () => openLibraryEntry(backTo.id, { keepVersion: true, scrollTo: '#similarPanel' }));
     $('#adaptBtn').addEventListener('click', async () => {
       if (adapted) return render(recipe);
       const result = await api('/api/adapt', { method: 'POST', body: { ingredients: recipe.ingredients, pref: state.pref } });
@@ -350,7 +417,8 @@ function adaptNotice(adapted) {
 // ---------- Library ----------
 
 async function refreshLibrary() {
-  state.library = await api('/api/library');
+  [state.library, state.profile] = await Promise.all([api('/api/library'), api('/api/profile')]);
+  renderTasteNote();
   $('#libCount').textContent = state.library.length || '';
   if ($('#view-library').classList.contains('active')) renderLibrary();
 }
@@ -361,7 +429,23 @@ function stars(n) {
   return '★'.repeat(r) + '☆'.repeat(5 - r);
 }
 
+function renderTaste() {
+  const p = state.profile;
+  const el = $('#taste');
+  el.hidden = !p?.feedbackCount;
+  if (el.hidden) return;
+  const rows = [];
+  if (p.summary.length) rows.push(`<li>You tend to prefer <b>${p.summary.map(esc).join(', ')}</b></li>`);
+  if (p.topLikes.length) rows.push(`<li>You rate dishes with <b>${p.topLikes.map(esc).join(', ')}</b> highly</li>`);
+  if (p.topDislikes.length) rows.push(`<li>You weren't keen on dishes with <b>${p.topDislikes.map(esc).join(', ')}</b></li>`);
+  if (p.commonNotes.length) rows.push(`<li>Most common notes: ${p.commonNotes.map(esc).join(', ')}</li>`);
+  el.innerHTML = `<h3>🧠 What your feedback says (${p.feedbackCount} note${p.feedbackCount > 1 ? 's' : ''})</h3>
+    ${rows.length ? `<ul>${rows.join('')}</ul>` : '<p class="muted" style="margin:0">Keep rating recipes — patterns will show up here.</p>'}
+    <p class="muted" style="margin:8px 0 0;font-size:.85rem">Search results are ranked with this, and each recipe can find versions closer to what you want.</p>`;
+}
+
 function renderLibrary() {
+  renderTaste();
   const grid = $('#library');
   const filter = $('#libFilter').value.trim().toLowerCase();
   const items = state.library.filter((e) => !filter || e.title.toLowerCase().includes(filter) || (e.sourceName || '').toLowerCase().includes(filter));
@@ -377,6 +461,7 @@ function renderLibrary() {
       source: e.sourceName,
       meta: [
         e.avgRating ? `${stars(e.avgRating)}` : 'Not rated yet',
+        timeSummary(e),
         e.timesMade ? `Made ${e.timesMade}×` : 'Not made yet',
         e.versions ? `${e.versions} version${e.versions > 1 ? 's' : ''}` : '',
       ],
@@ -473,6 +558,19 @@ function renderEntry(scrollTo) {
         <div id="altStatus" class="status"></div>
         <div class="suggestions">${e.suggestions.map(suggestionHtml).join('')}</div>
       </div>
+
+      <div class="panel" id="similarPanel">
+        <h3>🔎 Find recipes closer to what you want</h3>
+        <p class="muted" style="margin-top:0">${e.feedback.length
+          ? 'Searches for other versions of this dish and ranks them by how well they fix what you noted, compared with this recipe.'
+          : 'Rate this recipe first (above) — then this finds other versions of the dish that fix what you didn’t like.'}</p>
+        <div class="row">
+          <button class="primary" id="similarBtn">Find better matches</button>
+          ${state.status.claude ? '<label class="chip"><input type="checkbox" id="similarWeb"> Also search the whole web (slower)</label>' : ''}
+        </div>
+        <div id="similarStatus" class="status"></div>
+        <div id="similarResults" class="grid"></div>
+      </div>
     </div>`);
 
   if (scrollTo) $(scrollTo)?.scrollIntoView({ block: 'start' });
@@ -550,6 +648,8 @@ function renderEntry(scrollTo) {
       btn.disabled = false;
     }
   });
+  $('#similarBtn').addEventListener('click', (ev) => findSimilar(ev.target));
+  if (state.similar?.entryId === e.id) showSimilar(state.similar);
   $$('[data-save-suggestion]').forEach((b) => b.addEventListener('click', async () => {
     b.disabled = true;
     state.entry = await api(`/api/library/${e.id}/versions`, { method: 'POST', body: { suggestionId: b.dataset.saveSuggestion } });
@@ -558,6 +658,48 @@ function renderEntry(scrollTo) {
     refreshLibrary();
     toast('Saved as a new version — cook it and tell me how it went!');
   }));
+}
+
+async function findSimilar(btn) {
+  const e = state.entry;
+  btn.disabled = true;
+  const web = $('#similarWeb')?.checked;
+  setStatus($('#similarStatus'), `${spinner} Looking for other versions of this dish${web ? ' across the web (up to a minute)' : ''}…`);
+  $('#similarResults').innerHTML = '';
+  try {
+    const res = await api(`/api/library/${e.id}/similar`, {
+      method: 'POST',
+      body: { versionId: state.versionId, includeWeb: web, pref: state.pref, maxPrep: state.maxPrep || null, maxCook: state.maxCook || null },
+    });
+    state.similar = { ...res, entryId: e.id };
+    showSimilar(state.similar);
+  } catch (err) {
+    setStatus($('#similarStatus'), esc(err.message), 'error');
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+function showSimilar(res) {
+  const e = state.entry;
+  const looking = res.lookingFor.length ? ` Looking for: <b>${res.lookingFor.map(esc).join(', ')}</b>.` : '';
+  setStatus($('#similarStatus'), res.results.length
+    ? `${res.results.length} versions of “${esc(res.query)}”, best fit first.${looking}`
+    : `No other versions of “${esc(res.query)}” found.${looking}${res.errors.length ? ` (${esc(res.errors.join('; '))})` : ''}`);
+  const grid = $('#similarResults');
+  grid.innerHTML = '';
+  for (const r of res.results) {
+    const card = buildCard({
+      title: r.title,
+      image: r.image,
+      source: r.sourceName,
+      meta: [timeSummary(r), r.inLibrary ? '📖 in your library' : ''],
+      homemade: r.homemade,
+      fit: r.fit,
+    });
+    card.addEventListener('click', () => openRecipe(r, { backTo: { id: e.id, title: e.recipe.title } }));
+    grid.appendChild(card);
+  }
 }
 
 function feedbackItem(f) {
@@ -577,7 +719,7 @@ function suggestionHtml(s) {
   return `<div class="suggestion">
     <div class="row"><h3 style="margin:0">${esc(s.title)}</h3>
       <span class="tagline">${diff}</span>
-      ${s.homemade ? `<span class="tagline">${s.homemade.score}% homemade</span>` : ''}
+      ${s.homemade ? `<span class="tagline">${s.homemade.score}% from scratch</span>` : ''}
       <span class="tagline">${s.origin === 'claude' ? '✨ Claude' : '📏 rules'}</span></div>
     <p style="margin:8px 0 4px">${esc(s.summary)}</p>
     ${s.why ? `<p class="muted" style="margin:0 0 6px"><b>Why:</b> ${esc(s.why)}</p>` : ''}

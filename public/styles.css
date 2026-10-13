@@ -113,13 +113,25 @@ button.small { padding: 6px 10px; font-size: .85rem; }
 .chip.off { opacity: .5; cursor: help; }
 .chip.tag[aria-pressed=true] { background: var(--accent-soft); border-color: var(--accent); color: var(--accent); }
 
+.filters { display: flex; gap: 14px; align-items: center; flex-wrap: wrap; }
+.filter { display: flex; gap: 8px; align-items: center; }
+select { padding: 8px 10px; border-radius: 10px; border: 1px solid var(--line); background: var(--bg); }
+.small-note { font-size: .85rem; margin-top: -8px; }
+.fit { display: flex; flex-wrap: wrap; gap: 4px; }
+.fit:empty { display: none; }
+.fit span { font-size: .74rem; padding: 1px 7px; border-radius: 99px; }
+.fit .good { background: var(--good-soft); color: var(--good); }
+.fit .bad { background: var(--warn-soft); color: var(--warn); }
+.taste { margin-bottom: 16px; }
+.taste ul { margin: 6px 0 0; padding-left: 1.2em; }
+.back { margin: 10px 0 0 16px; }
 .import summary { cursor: pointer; color: var(--muted); font-size: .9rem; }
 .import .search-row { margin-top: 8px; }
 
-.status { margin: 18px 2px 10px; color: var(--muted); display: flex; align-items: center; gap: 8px; }
+.status { margin: 18px 2px 10px; color: var(--muted); }
 .status:empty { display: none; }
 .status.error { color: var(--accent); }
-.spinner { width: 16px; height: 16px; border-radius: 50%; border: 2px solid var(--line); border-top-color: var(--accent); animation: spin .8s linear infinite; }
+.spinner { display: inline-block; vertical-align: -3px; margin-right: 8px; width: 16px; height: 16px; border-radius: 50%; border: 2px solid var(--line); border-top-color: var(--accent); animation: spin .8s linear infinite; }
 @keyframes spin { to { transform: rotate(360deg); } }
 
 /* Cards */
@@ -171,6 +183,7 @@ button.small { padding: 6px 10px; font-size: .85rem; }
 .ingredients li.homemade.show-short { background: var(--good-soft); }
 .ingredients .flag { display: block; font-size: .8rem; color: var(--muted); margin-top: 2px; }
 .ingredients .flag b { color: var(--warn); }
+.ingredients li.processed { background: color-mix(in srgb, var(--warn-soft) 70%, var(--accent-soft)); }
 .ingredients li.homemade .flag b { color: var(--good); }
 .ingredients li.changed { background: var(--accent-soft); }
 .steps { padding-left: 1.3em; margin: 0; display: grid; gap: 10px; }
