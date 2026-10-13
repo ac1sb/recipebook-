@@ -167,13 +167,18 @@ async function search(q) {
     setStatus($('#searchStatus'), `${spinner} Searching ${apiSources.length} recipe source${apiSources.length > 1 ? 's' : ''}…`);
     tasks.push(
       api(`/api/search?${searchParams(q)}&sources=${apiSources.join(',')}`)
-        .then(({ results, errors, filteredOut, personalized }) => {
+        .then(({ results, errors, filteredOut, personalized, unrelated }) => {
           renderResults($('#results'), results);
+          const exact = results.filter((r) => r.relevance?.full !== false).length;
+          const close = results.length - exact;
           const timeNote = filteredOut ? ` ${filteredOut} hidden by your time filters.` : '';
           const fitNote = personalized?.length ? ' Ranked using your feedback.' : '';
+          const skipped = unrelated ? ` Skipped ${unrelated} unrelated result${unrelated > 1 ? 's' : ''}.` : '';
+          const moreNote = exact < 6 && !state.status.sources.some((s) => s.id !== 'themealdb' && s.enabled)
+            ? ' <br><span class="muted">TheMealDB is small — unlock Spoonacular, Edamam or the whole web (see README) for many more recipes.</span>' : '';
           const msg = results.length
-            ? `${results.length} recipes, best matches for “${esc(levelLabel())}” first.${fitNote}${timeNote}`
-            : `No recipes found for “${esc(q)}”${filteredOut ? ` within your time limits (${filteredOut} recipes were too long — try loosening the prep or cook time)` : ''}.`;
+            ? `${exact} recipe${exact === 1 ? '' : 's'} matching “${esc(q)}”${close ? ` and ${close} close match${close > 1 ? 'es' : ''}` : ''}, best for “${esc(levelLabel())}” first.${fitNote}${timeNote}${skipped}${moreNote}`
+            : `No recipes found for “${esc(q)}”${filteredOut ? ` within your time limits (${filteredOut} recipes were too long — try loosening the prep or cook time)` : ''}.${moreNote}`;
           setStatus($('#searchStatus'), msg + (errors.length ? ` <span class="muted">(${esc(errors.join('; '))})</span>` : ''));
         })
         .catch((err) => setStatus($('#searchStatus'), esc(err.message), 'error')),
@@ -202,7 +207,15 @@ function levelLabel() {
 }
 
 function renderResults(grid, results) {
+  let closeHeading = false;
   for (const r of results) {
+    if (r.relevance && !r.relevance.full && !closeHeading) {
+      closeHeading = true;
+      const h = document.createElement('div');
+      h.className = 'grid-heading';
+      h.innerHTML = '<b>Close matches</b> <span class="muted">— these are missing part of what you searched for</span>';
+      grid.appendChild(h);
+    }
     state.results.set(r.id, r);
     const card = buildCard({
       title: r.title,
@@ -210,7 +223,9 @@ function renderResults(grid, results) {
       source: r.sourceName,
       meta: [timeSummary(r), `${r.ingredients.length} ingredients`, r.description && r.description.slice(0, 40)],
       homemade: r.homemade,
-      fit: r.fit,
+      fit: r.relevance && !r.relevance.full
+        ? { ...r.fit, warnings: [`no ${r.relevance.missing.join(' or ')}`, ...(r.fit?.warnings || [])], reasons: r.fit?.reasons || [] }
+        : r.fit,
     });
     card.dataset.score = r.homemade.score;
     card.classList.toggle('dim', !r.matchesPreference);

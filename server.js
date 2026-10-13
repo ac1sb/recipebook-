@@ -10,6 +10,7 @@ import { claudeEnabled, searchWeb, suggestAlterations, describeFeedback } from '
 import { ruleBasedAlterations, FEEDBACK_TAGS } from './lib/tweaks.js';
 import { withTimes, matchesTime } from './lib/time.js';
 import { buildProfile, mergeProfiles, fit, dishQuery } from './lib/profile.js';
+import { filterRelevant } from './lib/relevance.js';
 import { createStore } from './lib/store.js';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
@@ -32,8 +33,9 @@ function timeFilters(q = {}) {
   return { maxPrep: minutes(q.maxPrep), maxCook: minutes(q.maxCook), maxTotal: minutes(q.maxTotal) };
 }
 
-// Best matches first: processing level, then how well the recipe fits the
-// cook's feedback (when a profile is given), then the source's own order.
+// Best matches first: recipes that match every searched word, then (within
+// those) how well they match, the processing level, how well the recipe fits
+// the cook's feedback (when a profile is given), and the source's own order.
 function rank(recipes, pref, { profile = null, reference = null, times = {} } = {}) {
   return recipes
     .map(withAnalysis)
@@ -41,7 +43,8 @@ function rank(recipes, pref, { profile = null, reference = null, times = {} } = 
     .map((r, i) => {
       const f = fit(r, profile, reference);
       const processing = preferenceDistance(r.homemade.score, pref);
-      return { ...r, matchesPreference: matchesPreference(r.homemade.score, pref), fit: f, _d: processing - f.score * 4 + i * 0.5 };
+      const rel = r.relevance ? (r.relevance.full ? 0 : 1000) - r.relevance.score * 4 : 0;
+      return { ...r, matchesPreference: matchesPreference(r.homemade.score, pref), fit: f, _d: rel + processing - f.score * 4 + i * 0.5 };
     })
     .sort((a, b) => a._d - b._d)
     .map(({ _d, ...r }) => r);
@@ -49,6 +52,19 @@ function rank(recipes, pref, { profile = null, reference = null, times = {} } = 
 
 async function globalProfile() {
   return buildProfile(await store.list());
+}
+
+// The same recipe can come from several sources; keep the first copy.
+function dedupe(recipes) {
+  const seen = new Set();
+  return recipes.filter((r) => {
+    const key = (r.url || '').replace(/^https?:\/\/(www\.)?/, '').replace(/[?#].*$/, '').replace(/\/$/, '') || r.title.toLowerCase();
+    const titleKey = r.title.toLowerCase().replace(/[^a-z]/g, '');
+    if (seen.has(key) || seen.has(titleKey)) return false;
+    seen.add(key);
+    seen.add(titleKey);
+    return true;
+  });
 }
 
 async function searchSources(q, ids, { limit = 12, times = {} } = {}) {
@@ -127,9 +143,18 @@ app.get('/api/search', wrap(async (req, res) => {
   const profile = req.query.personalize === '0' ? null : await globalProfile();
   const ids = String(req.query.sources || Object.keys(SOURCES).join(',')).split(',');
   // Fetch more when filtering by time so enough recipes are left afterwards.
-  const { merged, errors } = await searchSources(q, ids, { limit: filtering ? 30 : 12, times });
-  const results = rank(merged, pref, { profile, times });
-  res.json({ results, errors, filteredOut: merged.length - results.length, personalized: profile?.feedbackCount ? profile.summary : null });
+  const { merged, errors } = await searchSources(q, ids, { limit: filtering ? 30 : 20, times });
+  const { kept, dropped } = filterRelevant(dedupe(merged), q);
+  const ranked = rank(kept, pref, { profile, times });
+  const results = ranked.slice(0, 36);
+  res.json({
+    results,
+    errors,
+    partial: results.filter((r) => !r.relevance.full).length,
+    unrelated: dropped,
+    filteredOut: kept.length - ranked.length,
+    personalized: profile?.feedbackCount ? profile.summary : null,
+  });
 }));
 
 app.get('/api/search/web', wrap(async (req, res) => {
@@ -140,7 +165,8 @@ app.get('/api/search/web', wrap(async (req, res) => {
   const times = timeFilters(req.query);
   const profile = req.query.personalize === '0' ? null : await globalProfile();
   const found = await searchWeb(q, { pref, limit: 12, times, wishes: profileWishes(profile) });
-  res.json({ results: rank(found, pref, { profile, times }) });
+  const { kept } = filterRelevant(found, q, { minFull: 4 });
+  res.json({ results: rank(kept, pref, { profile, times }) });
 }));
 
 function profileWishes(profile) {
@@ -316,6 +342,7 @@ app.post('/api/library/:id/similar', wrap(async (req, res) => {
     candidates = [...web, ...merged];
   }
 
+  candidates = filterRelevant(dedupe(candidates), query, { minFull: 6 }).kept;
   const savedIds = new Set(library.map((e) => e.recipe.id));
   const sameTitle = (t) => t.trim().toLowerCase() === entry.recipe.title.trim().toLowerCase();
   const results = rank(candidates.filter((r) => r.id !== entry.recipe.id && !sameTitle(r.title)), pref, { profile, reference, times })
